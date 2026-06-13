@@ -1,4 +1,46 @@
 #!/bin/bash
+set -eEuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OMARCHY_DIR="$SCRIPT_DIR/../../omarchy"
+OMARCHY_KEY_FINGERPRINT="40DFB630FF42BCFFB047046CF0134EE680CAC571"
+OMARCHY_KEY_ID="F0134EE680CAC571"
+
+configure_omarchy_repo() {
+    local tmp_conf
+    tmp_conf="$(mktemp)"
+
+    awk '
+        /^\[omarchy\]$/ { skip = 1; next }
+        /^\[/ && skip { skip = 0 }
+        !skip { print }
+    ' /etc/pacman.conf > "$tmp_conf"
+
+    cat >> "$tmp_conf" <<'EOF'
+
+[omarchy]
+SigLevel = Optional TrustAll
+Server = https://pkgs.omarchy.org/stable/$arch
+EOF
+
+    sudo install -m 644 "$tmp_conf" /etc/pacman.conf
+    rm -f "$tmp_conf"
+}
+
+trust_omarchy_key() {
+    sudo pacman-key --init
+
+    if ! sudo pacman-key --recv-keys "$OMARCHY_KEY_FINGERPRINT" --keyserver keys.openpgp.org; then
+        sudo pacman-key --recv-keys "$OMARCHY_KEY_ID" --keyserver keyserver.ubuntu.com
+    fi
+
+    if ! sudo pacman-key --lsign-key "$OMARCHY_KEY_FINGERPRINT"; then
+        echo "Warning: Could not locally sign Omarchy key by fingerprint; trying short key id..."
+        if ! sudo pacman-key --lsign-key "$OMARCHY_KEY_ID"; then
+            echo "Warning: Could not locally sign Omarchy key. Continuing so omarchy-keyring can install from the trusted Omarchy repo."
+        fi
+    fi
+}
 
 # Check if git is installed
 if ! command -v git &> /dev/null; then
@@ -8,12 +50,10 @@ fi
 
 # Fetch Omarchy from repo
 echo "Fetching Omarchy source..."
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OMARCHY_DIR="$SCRIPT_DIR/../../omarchy"
 
-if [ -f "./fetch-omarchy.sh" ]; then
-    chmod +x ./fetch-omarchy.sh
-    ./fetch-omarchy.sh
+if [ -f "$SCRIPT_DIR/fetch-omarchy.sh" ]; then
+    chmod +x "$SCRIPT_DIR/fetch-omarchy.sh"
+    "$SCRIPT_DIR/fetch-omarchy.sh"
 else
     # Fallback if script is missing
     echo "fetch-omarchy.sh not found, falling back to default clone..."
@@ -51,19 +91,16 @@ else
     echo "yay is already installed."
 fi
 
-# Receive the Omarchy signing key
-sudo pacman-key --recv-keys F0134EE680CAC571
+# Configure the Omarchy repo without replacing CachyOS pacman.conf
+configure_omarchy_repo
 
-# Locally sign and trust the key
-sudo pacman-key --lsign-key F0134EE680CAC571
+# Receive, trust, and install the Omarchy signing keyring. This mirrors the
+# upstream Omarchy preflight without replacing CachyOS repository settings.
+trust_omarchy_key
+sudo pacman -Sy --noconfirm
+sudo pacman -S --needed --noconfirm omarchy-keyring
 
-# Add omarchy repository to pacman.conf (skip if already present)
-if ! grep -q '^\[omarchy\]' /etc/pacman.conf; then
-    echo -e "\n[omarchy]\nSigLevel = Optional TrustedOnly\nServer = https://pkgs.omarchy.org/\$arch" | sudo tee -a /etc/pacman.conf > /dev/null
-else
-    echo "Omarchy repository already present in pacman.conf, skipping."
-fi
-sudo pacman -Syu
+sudo pacman -Syu --noconfirm
 
 # Remove CachyOS SDDM config
 if [ -f /etc/sddm.conf ]; then
@@ -88,7 +125,7 @@ echo ""
 echo "Making adjustments to Omarchy install scripts to support CachyOS..."
 
 # Navigate to Omarchy install scripts
-cd ../omarchy
+cd "$OMARCHY_DIR"
 
 # Remove tldr installation to prevent conflict with tealdeer install.
 sed -i '/tldr/d' install/omarchy-base.packages
@@ -102,7 +139,7 @@ sed -i '/linux-cachyos/ ! s/pacman -Q linux/pacman -Q linux-cachyos/' bin/omarch
 sed -i '/run_logged \$OMARCHY_INSTALL\/preflight\/pacman\.sh/d' install/preflight/all.sh
 
 # Replace nvidia.sh with custom CachyOS 580xx Driver Logic
-cp ../bin/nvidia.sh install/config/hardware/nvidia.sh
+cp "$SCRIPT_DIR/nvidia.sh" install/config/hardware/nvidia.sh
 chmod +x install/config/hardware/nvidia.sh
 
 # Fix omarchy-ai-skill.sh symlink to be idempotent on re-runs
@@ -154,9 +191,12 @@ fi\
 # Update mise activation to support both bash and fish
 sed -i 's/omarchy-cmd-present mise && eval "\$(mise activate bash)"/if [ "\$SHELL" = "\/bin\/bash" ] \&\& command -v mise \&> \/dev\/null; then\n  eval "\$(mise activate bash)"\nelif [ "\$SHELL" = "\/bin\/fish" ] \&\& command -v mise \&> \/dev\/null; then\n  mise activate fish | source\nfi/' config/uwsm/env
 
-# Copy omarchy installation files to ~/.local/share/omarchy
+# Copy omarchy installation files to ~/.local/share/omarchy. Remove previous
+# partial copies first because git pack files are read-only and cp cannot
+# overwrite them on re-runs.
+rm -rf ~/.local/share/omarchy
 mkdir -p ~/.local/share/omarchy
-cp -r . ~/.local/share/omarchy
+cp -a . ~/.local/share/omarchy
 cd ~/.local/share/omarchy
 
 # Pause and prompt for acknowledgment to begin installation

@@ -27,8 +27,12 @@ else
     echo "[*] Driver installed via CachyOS hardware detection."
 fi
 
-# Ensure VA-API utils are present for hardware video acceleration
-sudo pacman -S --needed --noconfirm libva-utils
+# Install VA-API diagnostics if available, but do not fail the desktop install
+# just because a CachyOS mirror cannot serve this optional package.
+if ! command -v vainfo &>/dev/null; then
+    sudo pacman -S --needed --noconfirm libva-utils || \
+        echo "[!] Could not install optional libva-utils package. Continuing."
+fi
 
 # Apply NVIDIA environment variables for UWSM/Hyprland
 mkdir -p "$HOME/.config/uwsm"

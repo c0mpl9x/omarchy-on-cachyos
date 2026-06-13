@@ -1,4 +1,5 @@
 #!/bin/bash
+set -eEuo pipefail
 
 # Target destination (relative to this script's location)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -7,7 +8,12 @@ REPO_URL="https://github.com/basecamp/omarchy"
 
 # Fetch available stable version tags from the remote repository cleanly
 echo "Fetching available stable releases from GitHub..."
-RELEASES=($(git ls-remote --tags --refs $REPO_URL 2>/dev/null | awk -F/ '{print $3}' | sort -rV | head -n 5))
+mapfile -t RELEASES < <(git ls-remote --tags --refs "$REPO_URL" 2>/dev/null | awk -F/ '{print $3}' | sort -rV | head -n 5)
+
+if [ "${#RELEASES[@]}" -eq 0 ]; then
+    echo "Error: Could not fetch Omarchy release tags from $REPO_URL"
+    exit 1
+fi
 
 echo "-----------------------------------------------"
 echo "Select the Omarchy version you want to install:"
@@ -20,14 +26,20 @@ for i in "${!RELEASES[@]}"; do
 done
 
 read -r -p "Enter your choice (1-$(( ${#RELEASES[@]} + 1 ))): " CHOICE
+CHOICE="${CHOICE:-1}"
+
+if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || (( CHOICE < 1 || CHOICE > ${#RELEASES[@]} + 1 )); then
+    echo "Error: Invalid choice '$CHOICE'."
+    exit 1
+fi
 
 # Formulate arguments based on selection
-if [ "$CHOICE" -eq 1 ] || [ -z "$CHOICE" ]; then
-    BRANCH_ARGS=""
+if [ "$CHOICE" -eq 1 ]; then
+    BRANCH_ARGS=()
     echo "Cloning bleeding-edge dev tree..."
 else
     SELECTED_TAG="${RELEASES[$((CHOICE-2))]}"
-    BRANCH_ARGS="--depth 1 -b $SELECTED_TAG"
+    BRANCH_ARGS=(--depth 1 -b "$SELECTED_TAG")
     echo "Cloning stable version: $SELECTED_TAG..."
 fi
 
@@ -39,7 +51,7 @@ if [ -d "$TARGET_DIR" ]; then
     
     if [[ "${CONFIRM,,}" =~ ^(y|yes)$ ]]; then
         echo "Cleaning up previous installation files at $TARGET_DIR..."
-        rm -rf "$TARGET_DIR"
+        rm -rf -- "$TARGET_DIR"
     else
         echo "Proceeding with existing files in $TARGET_DIR..."
         # If user chooses not to delete, we should skip the clone but continue the script
@@ -49,7 +61,7 @@ fi
 
 # Execute clean, quiet checkout bypassing standard detached HEAD advice warnings
 echo "Cloning into $TARGET_DIR..."
-if ! git -c advice.detachedHead=false clone --quiet $BRANCH_ARGS $REPO_URL "$TARGET_DIR"; then
+if ! git -c advice.detachedHead=false clone --quiet "${BRANCH_ARGS[@]}" "$REPO_URL" "$TARGET_DIR"; then
     echo "Error: Failed to clone Omarchy repo."
     exit 1
 fi
